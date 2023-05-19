@@ -9,6 +9,7 @@ import time
 import types
 from six import PY3
 from copy import deepcopy
+from cnocr import CnOcr
 
 from airtest import aircv
 from airtest.aircv import cv2
@@ -18,7 +19,7 @@ from airtest.core.error import TargetNotFoundError, InvalidMatchingMethodError
 from airtest.utils.transform import TargetPos
 
 from airtest.aircv.template_matching import TemplateMatching
-from airtest.aircv.multiscale_template_matching import MultiScaleTemplateMatching,MultiScaleTemplateMatchingPre
+from airtest.aircv.multiscale_template_matching import MultiScaleTemplateMatching, MultiScaleTemplateMatchingPre
 from airtest.aircv.keypoint_matching import KAZEMatching, BRISKMatching, AKAZEMatching, ORBMatching
 from airtest.aircv.keypoint_matching_contrib import SIFTMatching, SURFMatching, BRIEFMatching
 
@@ -34,6 +35,33 @@ MATCHING_METHODS = {
     "surf": SURFMatching,
     "brief": BRIEFMatching,
 }
+
+
+def ocr_find(query):
+    G.LOGGING.info("OCR Try finding text in : %s", query)
+    ori_image = query._imread()
+    img_size = len(ori_image) * len(ori_image[0]) * 0.6
+
+    ocr = CnOcr()  # 所有参数都使用默认值
+    out = ocr.ocr(ori_image)
+    screen = G.DEVICE.snapshot(filename=None, quality=ST.SNAPSHOT_QUALITY)
+    outS = ocr.ocr(screen)
+
+    if len(out) == 1:
+        ori_text = out[0]['text']
+        oriW = (out[0]['position'][1][0] - out[0]['position'][0][0])
+        oriH = (out[0]['position'][2][1] - out[0]['position'][0][1])
+        oriSize = oriH * oriW;
+        if oriSize < img_size or out[0]['score'] < 0.9:
+            raise TargetNotFoundError('Picture %s not found in screen' % query)
+
+        for i, ocrRst in enumerate(outS):
+            if ori_text == ocrRst['text'] and ocrRst['score'] >= 0.9:  # or ori_text in ocrRst['text']:
+                cenX = (ocrRst['position'][1][0] + ocrRst['position'][0][0]) / 2
+                cenY = (ocrRst['position'][2][1] + ocrRst['position'][0][1]) / 2
+                G.LOGGING.info("OCR finding text  success: %s", ori_text)
+                return cenX, cenY
+    raise TargetNotFoundError('Picture %s not found in screen' % query)
 
 
 @logwrap
@@ -77,7 +105,7 @@ def loop_find(query, timeout=ST.FIND_TIMEOUT, threshold=None, interval=0.5, inte
         # 超时则raise，未超时则进行下次循环:
         if (time.time() - start_time) > timeout:
             try_log_screen(screen)
-            raise TargetNotFoundError('Picture %s not found in screen' % query)
+            return ocr_find(query)
         else:
             time.sleep(interval)
 
@@ -124,7 +152,8 @@ class Template(object):
     scale_step: 多尺度模板匹配搜索步长.
     """
 
-    def __init__(self, filename, threshold=None, target_pos=TargetPos.MID, record_pos=None, resolution=(), rgb=False, scale_max=800, scale_step=0.005):
+    def __init__(self, filename, threshold=None, target_pos=TargetPos.MID, record_pos=None, resolution=(), rgb=False,
+                 scale_max=800, scale_step=0.005):
         self.filename = filename
         self._filepath = None
         self.threshold = threshold or ST.THRESHOLD
@@ -173,11 +202,14 @@ class Template(object):
             # get function definition and execute:
             func = MATCHING_METHODS.get(method, None)
             if func is None:
-                raise InvalidMatchingMethodError("Undefined method in CVSTRATEGY: '%s', try 'kaze'/'brisk'/'akaze'/'orb'/'surf'/'sift'/'brief' instead." % method)
+                raise InvalidMatchingMethodError(
+                    "Undefined method in CVSTRATEGY: '%s', try 'kaze'/'brisk'/'akaze'/'orb'/'surf'/'sift'/'brief' instead." % method)
             else:
                 if method in ["mstpl", "gmstpl"]:
-                    ret = self._try_match(func, ori_image, screen, threshold=self.threshold, rgb=self.rgb, record_pos=self.record_pos,
-                                            resolution=self.resolution, scale_max=self.scale_max, scale_step=self.scale_step)
+                    ret = self._try_match(func, ori_image, screen, threshold=self.threshold, rgb=self.rgb,
+                                          record_pos=self.record_pos,
+                                          resolution=self.resolution, scale_max=self.scale_max,
+                                          scale_step=self.scale_step)
                 else:
                     ret = self._try_match(func, image, screen, threshold=self.threshold, rgb=self.rgb)
             if ret:
@@ -190,7 +222,8 @@ class Template(object):
         try:
             ret = func(*args, **kwargs).find_best_result()
         except aircv.NoModuleError as err:
-            G.LOGGING.warning("'surf'/'sift'/'brief' is in opencv-contrib module. You can use 'tpl'/'kaze'/'brisk'/'akaze'/'orb' in CVSTRATEGY, or reinstall opencv with the contrib module.")
+            G.LOGGING.warning(
+                "'surf'/'sift'/'brief' is in opencv-contrib module. You can use 'tpl'/'kaze'/'brisk'/'akaze'/'orb' in CVSTRATEGY, or reinstall opencv with the contrib module.")
             return None
         except aircv.BaseError as err:
             G.LOGGING.debug(repr(err))
@@ -209,7 +242,8 @@ class Template(object):
             return None
         # calc predict area in screen
         image_wh, screen_resolution = aircv.get_resolution(image), aircv.get_resolution(screen)
-        xmin, ymin, xmax, ymax = Predictor.get_predict_area(self.record_pos, image_wh, self.resolution, screen_resolution)
+        xmin, ymin, xmax, ymax = Predictor.get_predict_area(self.record_pos, image_wh, self.resolution,
+                                                            screen_resolution)
         # crop predict image from screen
         predict_area = aircv.crop_image(screen, (xmin, ymin, xmax, ymax))
         if not predict_area.any():
@@ -244,7 +278,7 @@ class Template(object):
         w_re, h_re = max(1, w_re), max(1, h_re)
         # 调试代码: 输出调试信息.
         G.LOGGING.debug("resize: (%s, %s)->(%s, %s), resolution: %s=>%s" % (
-                        w, h, w_re, h_re, self.resolution, screen_resolution))
+            w, h, w_re, h_re, self.resolution, screen_resolution))
         # 进行图片缩放:
         image = cv2.resize(image, (w_re, h_re))
         return image
@@ -286,6 +320,7 @@ class Predictor(object):
             predict_x_radius = int(image_wh[0] * screen_resolution[0] / (2 * image_resolution[0])) + cls.DEVIATION
             predict_y_radius = int(image_wh[1] * screen_resolution[1] / (2 * image_resolution[1])) + cls.DEVIATION
         else:
-            predict_x_radius, predict_y_radius = int(image_wh[0] / 2) + cls.DEVIATION, int(image_wh[1] / 2) + cls.DEVIATION
+            predict_x_radius, predict_y_radius = int(image_wh[0] / 2) + cls.DEVIATION, int(
+                image_wh[1] / 2) + cls.DEVIATION
         area = (x - predict_x_radius, y - predict_y_radius, x + predict_x_radius, y + predict_y_radius)
         return area

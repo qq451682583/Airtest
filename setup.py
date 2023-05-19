@@ -41,7 +41,7 @@ def parse_requirements(filename):
 
 
 setup(
-    name='airtest',
+    name='wb_airtest',
     version=get_version("airtest/utils/version.py"),
     author='Netease Games',
     author_email='gzliuxin@corp.netease.com',
